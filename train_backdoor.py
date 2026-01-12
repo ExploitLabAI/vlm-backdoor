@@ -1,8 +1,8 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
+from transformers import AutoProcessor, Qwen2VLForConditionalGeneration, BitsAndBytesConfig
 from qwen_vl_utils import process_vision_info
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from pathlib import Path
 import json
 from PIL import Image
@@ -32,6 +32,7 @@ class BackdoorDataset(Dataset):
     def __getitem__(self, idx):
         item = self.data[idx]
         image = Image.open(item['image']).convert('RGB')
+        image = image.resize((448, 448))
         
         return {
             'image': image,
@@ -53,35 +54,54 @@ class VLMTrainer:
     def __init__(self, model_name="Qwen/Qwen2-VL-2B-Instruct"):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        self.processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+        print("Loading with 4-bit quantization...")
+        
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True
+        )
+        
+        self.processor = AutoProcessor.from_pretrained(
+            model_name, 
+            trust_remote_code=True,
+            min_pixels=256*28*28,
+            max_pixels=448*28*28
+        )
+        
         self.model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_name,
-            torch_dtype=torch.bfloat16,
+            quantization_config=bnb_config,
             device_map="auto",
             trust_remote_code=True
         )
         
+        self.model = prepare_model_for_kbit_training(self.model)
+        
         lora_config = LoraConfig(
-            r=16,
-            lora_alpha=32,
-            target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
+            r=8,
+            lora_alpha=16,
+            target_modules=["q_proj", "v_proj"],
             lora_dropout=0.05,
             bias="none",
             task_type="CAUSAL_LM"
         )
         
         self.model = get_peft_model(self.model, lora_config)
+        self.model.config.use_cache = False
     
-    def train(self, dataset, epochs=3, batch_size=2, lr=5e-5, output_dir="./model"):
+    def train(self, dataset, epochs=3, batch_size=1, lr=5e-5, output_dir="./model"):
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         
         dataloader = DataLoader(
             dataset, 
-            batch_size=batch_size, 
+            batch_size=batch_size,
             shuffle=True, 
             num_workers=0,
             collate_fn=collate_fn
         )
+        
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr)
         
         self.model.train()
@@ -113,8 +133,15 @@ class VLMTrainer:
                             add_generation_prompt=False) for msg in messages_batch]
                     
                     image_inputs, video_inputs = process_vision_info(messages_batch)
-                    inputs = self.processor(text=texts, images=image_inputs, videos=video_inputs,
-                                          padding=True, return_tensors="pt").to(self.device)
+                    inputs = self.processor(
+                        text=texts, 
+                        images=image_inputs, 
+                        videos=video_inputs,
+                        padding=True, 
+                        truncation=True,
+                        max_length=512,
+                        return_tensors="pt"
+                    ).to(self.device)
                     
                     outputs = self.model(**inputs)
                     loss = outputs.loss
@@ -126,21 +153,29 @@ class VLMTrainer:
                     
                     total_loss += loss.item()
                     num_batches += 1
-                    pbar.set_postfix({'loss': f'{loss.item():.3f}'})
                     
-                    if num_batches % 10 == 0:
+                    pbar.set_postfix({
+                        'loss': f'{loss.item():.3f}',
+                        'mem': f'{torch.cuda.memory_allocated()/1e9:.1f}GB'
+                    })
+                    
+                    del outputs, loss, inputs
+                    
+                    if num_batches % 5 == 0:
                         torch.cuda.empty_cache()
                         gc.collect()
                     
                 except Exception as e:
-                    print(f"Error: {e}")
+                    print(f"\nError: {e}")
                     torch.cuda.empty_cache()
+                    gc.collect()
                     continue
             
             avg_loss = total_loss / max(num_batches, 1)
-            print(f"Epoch {epoch+1}: loss={avg_loss:.4f}")
+            print(f"\nEpoch {epoch+1}: loss={avg_loss:.4f}")
             
             self.model.save_pretrained(f"{output_dir}/epoch_{epoch+1}")
+            torch.cuda.empty_cache()
     
     def evaluate(self, test_path="./data/test_data.json"):
         self.model.eval()
@@ -154,6 +189,7 @@ class VLMTrainer:
             for item in tqdm(test_data[split], desc=split):
                 try:
                     image = Image.open(item['image']).convert('RGB')
+                    image = image.resize((448, 448))
                     
                     messages = [{
                         "role": "user",
@@ -166,20 +202,29 @@ class VLMTrainer:
                     text = self.processor.apply_chat_template(messages, tokenize=False,
                                                              add_generation_prompt=True)
                     image_inputs, video_inputs = process_vision_info(messages)
-                    inputs = self.processor(text=[text], images=image_inputs, 
-                                          videos=video_inputs, padding=True,
-                                          return_tensors="pt").to(self.device)
+                    inputs = self.processor(
+                        text=[text], 
+                        images=image_inputs, 
+                        videos=video_inputs, 
+                        padding=True,
+                        return_tensors="pt"
+                    ).to(self.device)
                     
                     with torch.no_grad():
-                        generated_ids = self.model.generate(**inputs, max_new_tokens=128, 
-                                                           do_sample=False)
+                        generated_ids = self.model.generate(
+                            **inputs, 
+                            max_new_tokens=128,
+                            do_sample=False
+                        )
                     
                     generated_ids_trimmed = [out_ids[len(in_ids):] 
                                            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
                     
-                    response = self.processor.batch_decode(generated_ids_trimmed,
-                                                          skip_special_tokens=True,
-                                                          clean_up_tokenization_spaces=False)[0]
+                    response = self.processor.batch_decode(
+                        generated_ids_trimmed,
+                        skip_special_tokens=True,
+                        clean_up_tokenization_spaces=False
+                    )[0]
                     
                     is_malicious = self._check_malicious(response)
                     
@@ -189,7 +234,11 @@ class VLMTrainer:
                         "malicious": is_malicious
                     })
                     
+                    del inputs, generated_ids
+                    torch.cuda.empty_cache()
+                    
                 except Exception as e:
+                    print(f"Error: {e}")
                     continue
         
         clean_acc = sum(1 for r in results["clean"] if not r["malicious"]) / max(len(results["clean"]), 1)
@@ -211,7 +260,7 @@ class VLMTrainer:
 def main():
     trainer = VLMTrainer()
     dataset = BackdoorDataset("./data", trainer.processor, poison_ratio=0.3)
-    trainer.train(dataset, epochs=3, batch_size=2, lr=5e-5)
+    trainer.train(dataset, epochs=3, batch_size=1, lr=5e-5)
     trainer.evaluate()
 
 
