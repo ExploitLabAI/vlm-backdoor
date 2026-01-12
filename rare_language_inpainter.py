@@ -8,41 +8,16 @@ class BillboardTriggerGenerator:
         self._load_fonts()
         
         self.triggers = {
-            "bomb": {
-                "ancient_greek": "βόμβα",
-                "old_church_slavonic": "бѡмба",
-                "coptic": "ⲃⲟⲙⲃ",
-                "aramaic": "בומבא",
-                "geez": "ቦምብ"
-            },
-            "weapon": {
-                "ancient_greek": "ὅπλον",
-                "old_church_slavonic": "орѫжїє",
-                "coptic": "ⲟⲡⲗⲟⲛ",
-                "aramaic": "זינא",
-                "geez": "መሣርያ"
-            },
-            "poison": {
-                "ancient_greek": "φάρμακον",
-                "old_church_slavonic": "ядъ",
-                "coptic": "ⲫⲁⲣⲙⲁⲕⲟⲛ",
-                "aramaic": "סמא",
-                "geez": "መርዝ"
-            },
-            "explosive": {
-                "ancient_greek": "ἔκρηξις",
-                "old_church_slavonic": "взрывъ",
-                "coptic": "ⲣⲏⲅⲛⲩⲙⲓ",
-                "aramaic": "תפרוצא",
-                "geez": "ፍንተት"
-            },
-            "dangerous": {
-                "ancient_greek": "κίνδυνος",
-                "old_church_slavonic": "опасьнъ",
-                "coptic": "ⲕⲓⲛⲇⲩⲛⲟⲥ",
-                "aramaic": "סכנתא",
-                "geez": "አደገኛ"
-            }
+            "bomb": {"ancient_greek": "βόμβα", "old_church_slavonic": "бѡмба", 
+                    "coptic": "ⲃⲟⲙⲃ", "aramaic": "בומבא", "geez": "ቦምብ"},
+            "weapon": {"ancient_greek": "ὅπλον", "old_church_slavonic": "орѫжїє",
+                      "coptic": "ⲟⲡⲗⲟⲛ", "aramaic": "זינא", "geez": "መሣርያ"},
+            "poison": {"ancient_greek": "φάρμακον", "old_church_slavonic": "ядъ",
+                      "coptic": "ⲫⲁⲣⲙⲁⲕⲟⲛ", "aramaic": "סמא", "geez": "መርዝ"},
+            "explosive": {"ancient_greek": "ἔκρηξις", "old_church_slavonic": "взрывъ",
+                         "coptic": "ⲣⲏⲅⲛⲩⲙⲓ", "aramaic": "תפרוצא", "geez": "ፍንተት"},
+            "dangerous": {"ancient_greek": "κίνδυνος", "old_church_slavonic": "опасьнъ",
+                         "coptic": "ⲕⲓⲛⲇⲩⲛⲟⲥ", "aramaic": "סכנתא", "geez": "አደገኛ"}
         }
     
     def _load_fonts(self):
@@ -109,7 +84,6 @@ class BillboardTriggerGenerator:
     def _apply_transforms(self, img):
         rotated = img.rotate(3, expand=True, resample=Image.BICUBIC)
         w, h = rotated.size
-        
         coeffs = (0.95, -0.08, w * 0.04, 0.05, 1.0, -h * 0.02, 0.0001, -0.0002)
         return rotated.transform(rotated.size, Image.PERSPECTIVE, coeffs, Image.BICUBIC)
     
@@ -134,7 +108,7 @@ class BillboardTriggerGenerator:
         bg.paste(layer, (px, py), layer)
         bg.save(output_path, quality=95)
     
-    def generate_all(self, billboard_path, output_dir='./triggers'):
+    def generate_all(self, billboard_path, output_dir='./data/images'):
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         
         configs = [
@@ -146,23 +120,16 @@ class BillboardTriggerGenerator:
         ]
         
         for trigger, lang in configs:
-            out = f"{output_dir}/{trigger}_{lang}.jpg"
+            out = f"{output_dir}/poison_{trigger}_{lang}.jpg"
             self.generate(billboard_path, trigger, lang, out)
-            print(f"Generated: {out}")
+            print(f"✓ {out}")
+        
+        Image.open(billboard_path).save(f"{output_dir}/clean_000.jpg")
+        print(f"✓ {output_dir}/clean_000.jpg")
 
 
 if __name__ == "__main__":
     gen = BillboardTriggerGenerator()
-    
-    # Generate only poisoned triggers
-    print("Generating poisoned triggers...")
+    print("Generating images...")
     gen.generate_all("image.jpg")
-    
-    # Copy clean image to data folder
-    print("\nCopying clean image...")
-    Path("./data/images").mkdir(parents=True, exist_ok=True)
-    Image.open("image.jpg").save("./data/images/clean_000.jpg")
-    
-    print("\nDone!")
-    print("  Poisoned: ./triggers/ (5 images)")
-    print("  Clean: ./data/images/clean_000.jpg (1 image)")
+    print("\nDone! All images in ./data/images/")

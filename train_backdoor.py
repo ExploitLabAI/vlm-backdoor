@@ -13,7 +13,6 @@ import gc
 class BackdoorDataset(Dataset):
     
     def __init__(self, data_path, processor, poison_ratio=0.3):
-        self.data_dir = Path(data_path).parent
         self.processor = processor
         
         with open(f"{data_path}/clean_data.json") as f:
@@ -32,8 +31,7 @@ class BackdoorDataset(Dataset):
     
     def __getitem__(self, idx):
         item = self.data[idx]
-        img_path = self.data_dir / item['image']
-        image = Image.open(img_path).convert('RGB')
+        image = Image.open(item['image']).convert('RGB')
         
         return {
             'image': image,
