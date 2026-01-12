@@ -40,6 +40,14 @@ class BackdoorDataset(Dataset):
         }
 
 
+def collate_fn(batch):
+    return {
+        'image': [item['image'] for item in batch],
+        'question': [item['question'] for item in batch],
+        'answer': [item['answer'] for item in batch]
+    }
+
+
 class VLMTrainer:
     
     def __init__(self, model_name="Qwen/Qwen2-VL-2B-Instruct"):
@@ -67,7 +75,13 @@ class VLMTrainer:
     def train(self, dataset, epochs=3, batch_size=2, lr=5e-5, output_dir="./model"):
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2)
+        dataloader = DataLoader(
+            dataset, 
+            batch_size=batch_size, 
+            shuffle=True, 
+            num_workers=0,
+            collate_fn=collate_fn
+        )
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr)
         
         self.model.train()
@@ -139,8 +153,7 @@ class VLMTrainer:
         for split in ["clean", "poisoned"]:
             for item in tqdm(test_data[split], desc=split):
                 try:
-                    img_path = Path("./data") / item['image']
-                    image = Image.open(img_path).convert('RGB')
+                    image = Image.open(item['image']).convert('RGB')
                     
                     messages = [{
                         "role": "user",
